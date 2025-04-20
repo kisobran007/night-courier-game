@@ -12,6 +12,7 @@ import 'obstacle_type.dart';
 import 'game_manager.dart';
 import 'pickup_item.dart';
 import 'pickup_type.dart';
+import 'level_manager.dart';
 
 class DeliveryGame extends FlameGame with TapDetector {
   late Road road1;
@@ -35,6 +36,9 @@ class DeliveryGame extends FlameGame with TapDetector {
   double pickupSpawnTimer = 0.0;
   late RectangleComponent fuelBarBackground;
   late RectangleComponent fuelBarFill;
+  late LevelManager levelManager;
+  TextComponent? levelText;
+  TextComponent? timerText;
 
 
   @override
@@ -114,6 +118,36 @@ class DeliveryGame extends FlameGame with TapDetector {
       paint: Paint()..color = Colors.green,
     );
     add(fuelBarFill);
+
+    levelManager = LevelManager();
+
+    levelText = TextComponent(
+      text: 'Level 1',
+      position: Vector2(size.x / 2, 50),
+      anchor: Anchor.topCenter,
+      textRenderer: TextPaint(
+        style: const TextStyle(
+          color: Colors.yellow,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+    add(levelText!);
+
+    timerText = TextComponent(
+      text: 'Time: 5:00',
+      position: Vector2(size.x / 2, 80),
+      anchor: Anchor.topCenter,
+      textRenderer: TextPaint(
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 20,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+    add(timerText!);
   }
 
   double laneX(int lane) {
@@ -146,16 +180,14 @@ class DeliveryGame extends FlameGame with TapDetector {
     // Update fuel bar width i boju
     final fuelRatio = gameManager.fuel / 100;
     fuelBarFill.size.x = 200 * fuelRatio;
-
-    // Boja prelazi iz zelene ka crvenoj
     fuelBarFill.paint.color = Color.lerp(Colors.red, Colors.green, fuelRatio)!;
 
     if (!gameManager.isGameOver) {
-      gameManager.consumeFuel(dt * 5);
+      gameManager.consumeFuel(dt * 3);
 
       if (gameManager.fuel <= 0) {
         gameManager.triggerGameOver();
-        return;  // Game over ako gorivo nestane
+        return;
       }
 
       // Kolizija sa preprekama
@@ -173,7 +205,7 @@ class DeliveryGame extends FlameGame with TapDetector {
       for (final pickup in activePickups.toList()) {
         if (bike.toRect().overlaps(pickup.toRect())) {
           if (pickup.type == PickupType.fuel) {
-            gameManager.refillFuel(30); // ili neka druga vrednost
+            gameManager.refillFuel(50);
           } else {
             score += pickup.type.scoreValue;
             scoreText.text = 'Score: $score';
@@ -217,10 +249,59 @@ class DeliveryGame extends FlameGame with TapDetector {
       pickupSpawnTimer += dt;
       activePickups.removeWhere((p) => p.position.y > size.y);
 
+      final needsFuel = gameManager.fuel < 15;
+      final hasFuelPickup = activePickups.any((p) => p.type == PickupType.fuel);
+
+      if (needsFuel && !hasFuelPickup) {
+        final safeLanes = List<int>.generate(totalLanes, (i) => i)
+            .where((laneIndex) =>
+                !activeObstacles.any((o) => laneX(laneIndex) == o.position.x))
+            .toList();
+
+        if (safeLanes.isNotEmpty) {
+          final laneIndex = safeLanes[random.nextInt(safeLanes.length)];
+          spawnPickup(PickupType.fuel, laneIndex);
+          pickupSpawnTimer = 0;
+          return;
+        }
+      }
+
       if (pickupSpawnTimer > 3.5 && activePickups.length < 2) {
         final laneIndex = random.nextInt(totalLanes);
-        final type = PickupType.values[random.nextInt(PickupType.values.length)];
+
+        // Dinamička šansa za fuel u odnosu na nivo goriva
+        final baseFuelChance = 0.05;
+        final dynamicFuelChance = fuelRatio < 0.3 ? 0.3 : baseFuelChance;
+        final isFuel = random.nextDouble() < dynamicFuelChance;
+
+        final type = isFuel
+            ? PickupType.fuel
+            : PickupType.values
+                .where((t) => t != PickupType.fuel)
+                .toList()[random.nextInt(PickupType.values.length - 1)];
+
         spawnPickup(type, laneIndex);
+        pickupSpawnTimer = 0;
+      }
+      // Update Level Timer
+      levelManager.update(dt);
+      final minutes = levelManager.timeRemaining ~/ 60;
+      final seconds = (levelManager.timeRemaining % 60).toInt();
+      timerText!.text = 'Time: ${minutes}:${seconds.toString().padLeft(2, '0')}';
+
+      // Game over ako istekne vreme
+      if (levelManager.isTimeUp()) {
+        gameManager.triggerGameOver();
+        return;
+      }
+
+      // Provera za prelazak na sledeći nivo
+      if (score >= levelManager.targetScore) {
+        levelManager.nextLevel();
+        score = 0;
+        scoreText.text = 'Score: 0';
+        gameManager.refillFuel(100); // reset fuel
+        levelText!.text = 'Level ${levelManager.currentLevel}';
       }
     }
 
@@ -242,7 +323,6 @@ class DeliveryGame extends FlameGame with TapDetector {
       }
     }
   }
-
 
   void spawnPickup(PickupType type, int laneIndex) async {
     final pickup = await PickupItem.create(type, Vector2(laneX(laneIndex), -60));
@@ -283,6 +363,10 @@ class DeliveryGame extends FlameGame with TapDetector {
       gameOverText!.removeFromParent();
       gameOverText = null;
     }
+
+    levelManager.reset();
+    levelText!.text = 'Level 1';
+    timerText!.text = 'Time: 5:00';
 
     // Ponovo dodaj bike i road
     add(bike);
